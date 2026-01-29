@@ -1,0 +1,11 @@
+{
+    "mcpServers":{
+        "shadcn":{
+            "command": "npx",
+            "args": ["shadcn@latest","ncp"]
+        },
+        "zustand Docs":{
+            "url": "https://gitmcp.io/pmndrs/zustand"
+        }
+        }
+}
