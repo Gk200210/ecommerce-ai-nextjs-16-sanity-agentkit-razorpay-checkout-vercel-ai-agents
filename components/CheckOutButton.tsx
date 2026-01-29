@@ -5,8 +5,6 @@ import { Loader2, CreditCard } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useCartItems } from "@/lib/store/cart-store-provider";
-import { createCheckoutSession } from "@/lib/actions/checkout";
-import { verifyPayment } from "@/lib/actions/verify-payment";
 
 declare global {
   interface Window {
@@ -33,8 +31,14 @@ export function CheckoutButton({ disabled }: CheckoutButtonProps) {
 
     startTransition(async () => {
       try {
-        // 1️⃣ Create order on server
-        const result = await createCheckoutSession(items);
+        // ✅ CALL API ROUTE INSTEAD OF SERVER ACTION
+        const res = await fetch("/api/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        });
+
+        const result = await res.json();
 
         if (!result.success || !result.order) {
           setError(result.error ?? "Checkout failed");
@@ -48,24 +52,27 @@ export function CheckoutButton({ disabled }: CheckoutButtonProps) {
           return;
         }
 
-        // 2️⃣ Razorpay Checkout Config (CORRECT)
         const options = {
           key: razorpayKey,
-          order_id: result.order.id, // Only this is required
-
+          order_id: result.order.id,
           name: "My Store",
           description: "Order Payment",
 
           handler: async function (response: any) {
             try {
-              const verifyRes = await verifyPayment({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-              });
+              // ✅ VERIFY VIA API ROUTE
+              const verifyRes = await fetch("/api/verify-payment", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                }),
+              }).then(r => r.json());
 
               if (verifyRes.success) {
-                toast.success("Payment successful!");
+                window.location.href = `/checkout/success?payment_id=${response.razorpay_payment_id}`;
               } else {
                 toast.error("Payment verification failed");
               }
@@ -83,6 +90,7 @@ export function CheckoutButton({ disabled }: CheckoutButtonProps) {
             upi: true,
             card: true,
             wallet: true,
+            netbanking: true,
           },
         };
 

@@ -5,7 +5,20 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { client } from "@/sanity/lib/client";
 import { PRODUCTS_BY_IDS_QUERY } from "@/sanity/queries/products";
 
-
+const ORDER_QUERY = `
+  *[_type == "order" && razorpayPaymentId == $paymentId][0]{
+    orderNumber,
+    email,
+    total,
+    status,
+    address,
+    items[]{
+      quantity,
+      priceAtPurchase,
+      product->{ name }
+    }
+  }
+`;
 /**
  * Get Razorpay instance with lazy initialization
  * Only initializes when actually needed
@@ -116,5 +129,33 @@ export async function createCheckoutSession(
       success: false,
       error: "Something went wrong. Please try again.",
     };
+  }
+}
+
+export async function getRazorpayOrder(paymentId: string) {
+  try {
+    const { userId } = await auth();
+    if (!userId) return { success: false };
+
+    const order = await client.fetch(ORDER_QUERY, { paymentId });
+    if (!order) return { success: false };
+
+    return {
+      success: true,
+      order: {
+        customerEmail: order.email,
+        customerName: order.address?.name,
+        amountTotal: order.total,
+        paymentStatus: order.status,
+        shippingAddress: order.address,
+        lineItems: order.items.map((i: any) => ({
+          name: i.product?.name,
+          quantity: i.quantity,
+          amount: i.priceAtPurchase,
+        })),
+      },
+    };
+  } catch (e) {
+    return { success: false };
   }
 }
