@@ -1,18 +1,20 @@
-import { createAgentUIStreamResponse, type UIMessage } from "ai";
-import { auth } from "@clerk/nextjs/server";
-import { createShoppingAgent } from "@/lib/ai/shopping-agents";
+import OpenAI from "openai";
 
-export async function POST(request: Request) {
-  const { messages }: { messages: UIMessage[] } = await request.json();
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-  // Get the user's session - userId will be null if not authenticated
-  const { userId } = await auth();
+export async function POST(req: Request) {
+  const { message } = await req.json();
 
-  // Create agent with user context (orders tool only available if authenticated)
-  const agent = createShoppingAgent({ userId });
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "user", content: message }
+    ],
+  });
 
-  return createAgentUIStreamResponse({
-    agent,
-    uiMessages: messages,
+  return Response.json({
+    reply: response.choices[0].message.content,
   });
 }
