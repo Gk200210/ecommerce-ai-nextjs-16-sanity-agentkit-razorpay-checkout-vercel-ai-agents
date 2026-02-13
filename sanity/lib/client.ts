@@ -15,5 +15,5 @@ export const writeClient = createClient({
   dataset,
   apiVersion,
   useCdn: false,
-  token: process.env.SANITY_API_TOKEN, // Optional: token for authenticated writes
+  token: process.env.SANITY_API_WRITE_TOKEN, // token for authenticated writes
 })

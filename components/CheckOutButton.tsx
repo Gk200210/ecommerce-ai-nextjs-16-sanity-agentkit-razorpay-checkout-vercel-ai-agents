@@ -46,7 +46,7 @@ export function CheckoutButton({ disabled }: CheckoutButtonProps) {
           return;
         }
 
-        const razorpayKey = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
+        const razorpayKey = process.env.RAZORPAY_WEBHOOK_SECRET;
         if (!razorpayKey) {
           toast.error("Razorpay key missing");
           return;

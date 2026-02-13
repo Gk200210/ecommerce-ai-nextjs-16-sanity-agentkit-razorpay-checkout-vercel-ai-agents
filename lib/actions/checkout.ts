@@ -111,7 +111,11 @@ export async function createCheckoutSession(
       receipt: `order_${Date.now()}`,
       notes: {
         clerkUserId: userId,
-        email: user.emailAddresses[0]?.emailAddress ?? "",
+        userEmail: user.emailAddresses[0]?.emailAddress ?? "",
+        productIds: productIds.join(","),
+        quantities: items.map((i) => i.quantity).join(","),
+        customerName: user.fullName ?? "",
+        sanityCustomerId: "",
       },
     });
 
