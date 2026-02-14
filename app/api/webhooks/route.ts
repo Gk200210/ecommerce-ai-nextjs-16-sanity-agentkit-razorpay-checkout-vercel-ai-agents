@@ -3,38 +3,49 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { client, writeClient } from "@/sanity/lib/client";
 
-
-
-const ORDER_BY_RAZORPAY_PAYMENT_ID_QUERY = `
+const ORDER_BY_PAYMENT_ID_QUERY = `
   *[_type == "order" && razorpayPaymentId == $razorpayPaymentId][0]
 `;
 
-const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET!;
-
 export async function POST(req: Request) {
   try {
-    // 🔹 Get raw body EXACTLY as Razorpay sent
-    const body = await req.text();
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
-    // 🔹 Read signature header (NO await here)
-    const signature = (await headers()).get("x-razorpay-signature");
-
-    if (!signature) {
-      return NextResponse.json({ error: "Missing signature" }, { status: 400 });
+    if (!webhookSecret) {
+      console.error("Missing RAZORPAY_WEBHOOK_SECRET");
+      return NextResponse.json(
+        { error: "Server misconfigured" },
+        { status: 500 }
+      );
     }
 
-    // 🔐 Verify signature
+    // 🔹 Get raw body EXACTLY as Razorpay sends it
+    const rawBody = await req.text();
+
+     const signature = (await headers()).get("x-razorpay-signature");
+
+    if (!signature) {
+      return NextResponse.json(
+        { error: "Missing signature" },
+        { status: 400 }
+      );
+    }
+
+    // 🔐 Verify webhook signature
     const expectedSignature = crypto
       .createHmac("sha256", webhookSecret)
-      .update(body)
+      .update(rawBody)
       .digest("hex");
 
     if (expectedSignature !== signature) {
-      console.error("Signature mismatch");
-      return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+      console.error("Invalid webhook signature");
+      return NextResponse.json(
+        { error: "Invalid signature" },
+        { status: 400 }
+      );
     }
 
-    const event = JSON.parse(body);
+    const event = JSON.parse(rawBody);
 
     if (event.event !== "payment.captured") {
       return NextResponse.json({ received: true });
@@ -45,17 +56,21 @@ export async function POST(req: Request) {
     await handlePaymentCaptured(payment);
 
     return NextResponse.json({ received: true });
-  } catch (err) {
-    console.error("Webhook error:", err);
-    return NextResponse.json({ error: "Webhook failure" }, { status: 500 });
+  } catch (error) {
+    console.error("Webhook error:", error);
+    return NextResponse.json(
+      { error: "Webhook processing failed" },
+      { status: 500 }
+    );
   }
 }
 
 async function handlePaymentCaptured(payment: any) {
   const razorpayPaymentId = payment.id;
 
+  // 🛑 Idempotency check
   const existingOrder = await client.fetch(
-    ORDER_BY_RAZORPAY_PAYMENT_ID_QUERY,
+    ORDER_BY_PAYMENT_ID_QUERY,
     { razorpayPaymentId }
   );
 
@@ -65,34 +80,70 @@ async function handlePaymentCaptured(payment: any) {
   }
 
   const notes = payment.notes || {};
+
   const {
     clerkUserId,
     userEmail,
     sanityCustomerId,
-    productIds: productIdsString,
-    quantities: quantitiesString,
+    productIds,
+    quantities,
     customerName,
   } = notes;
 
-  if (!productIdsString || !quantitiesString) {
-    console.error("Missing order metadata");
+  if (!productIds || !quantities) {
+    console.error("Missing order metadata in payment notes");
     return;
   }
 
-  const productIds = productIdsString.split(",");
-  const quantities = quantitiesString.split(",").map(Number);
+  const productIdArray = productIds.split(",");
+  const quantityArray = quantities.split(",").map(Number);
 
-  const orderItems = productIds.map((productId: string, index: number) => ({
-    _key: `item-${index}`,
-    product: { _type: "reference" as const, _ref: productId },
-    quantity: quantities[index],
-    priceAtPurchase: payment.amount / 100 / productIds.length,
-  }));
+  // 🔎 Fetch products to get correct prices
+  const products = await client.fetch(
+    `*[_type == "product" && _id in $ids]{
+      _id,
+      price,
+      stock
+    }`,
+    { ids: productIdArray }
+  );
+
+  if (!products.length) {
+    console.error("Products not found");
+    return;
+  }
+
+  // 🔐 Validate stock
+  for (let i = 0; i < productIdArray.length; i++) {
+    const product = products.find(
+      (p: any) => p._id === productIdArray[i]
+    );
+
+    if (!product || product.stock < quantityArray[i]) {
+      console.error("Insufficient stock for", productIdArray[i]);
+      return;
+    }
+  }
+
+  const orderItems = productIdArray.map((productId: string, index: number) => {
+    const product = products.find((p: any) => p._id === productId);
+
+    return {
+      _key: `item-${index}`,
+      product: { _type: "reference", _ref: productId },
+      quantity: quantityArray[index],
+      priceAtPurchase: product.price,
+    };
+  });
 
   const orderNumber = `ORD-${Date.now()
     .toString(36)
-    .toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    .toUpperCase()}-${Math.random()
+    .toString(36)
+    .slice(2, 6)
+    .toUpperCase()}`;
 
+  // 📝 Create order
   await writeClient.create({
     _type: "order",
     orderNumber,
@@ -106,17 +157,23 @@ async function handlePaymentCaptured(payment: any) {
     status: "paid",
     razorpayPaymentId,
     razorpayOrderId: payment.order_id,
-    address: { name: customerName ?? "", country: "IN" },
+    address: {
+      name: customerName ?? "",
+      country: "IN",
+    },
     createdAt: new Date().toISOString(),
   });
 
-  await productIds
+  // 📦 Atomic stock update
+  await productIdArray
     .reduce(
-      (tx: any, productId: string, i: number) =>
-        tx.patch(productId, (p: any) => p.dec({ stock: quantities[i] })),
+      (tx: any, productId: string, index: number) =>
+        tx.patch(productId, (p: any) =>
+          p.dec({ stock: quantityArray[index] })
+        ),
       writeClient.transaction()
     )
     .commit();
 
-  console.log("Order saved + stock updated");
+  console.log("Order saved and stock updated successfully");
 }
